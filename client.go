@@ -1,17 +1,18 @@
-package apxapi
+package appolloxapi
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
+	"strings"
 	"time"
+	"unsafe"
 
+	"github.com/google/go-querystring/query"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -26,91 +27,101 @@ var ENDPOINT = "https://fapi.apollox.finance"
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 type Client struct {
-	privateKey string
-	subaccount string
-	HTTPC      *http.Client
-
-	apiKey    string
-	apiSecret string
+	key, secret string
+	subaccount  string
+	client      *http.Client
+	window      int
 }
 
-func New(privateKey, subaccount, apiKey, apiSecret string) *Client {
+func New(key, secret, subaccount string) *Client {
 	hc := &http.Client{
 		Timeout: 10 * time.Second,
 	}
 	return &Client{
-		privateKey: privateKey,
+		key:        key,
+		secret:     secret,
 		subaccount: subaccount,
-		apiKey:     apiKey,
-		apiSecret:  apiSecret,
-		HTTPC:      hc,
+		client:     hc,
+		window:     5000,
 	}
 }
 
-func (p *Client) newRequest(method, spath string, body []byte, params *map[string]string) (*http.Request, error) {
-	u, _ := url.ParseRequestURI(ENDPOINT)
-	u.Path = u.Path + spath
-	if params != nil {
-		q := u.Query()
-		for k, v := range *params {
-			q.Set(k, v)
+func (c *Client) do(method, path string, data interface{}, sign bool, stream bool) (response []byte, err error) {
+	values, err := query.Values(data)
+	if err != nil {
+		return nil, err
+	}
+	payload := values.Encode()
+	if sign {
+		payload = fmt.Sprintf("%s&timestamp=%v&recvWindow=%d", payload, time.Now().UnixNano()/(1000*1000), c.window)
+		mac := hmac.New(sha256.New, []byte(c.secret))
+		_, err = mac.Write([]byte(payload))
+		if err != nil {
+			return nil, err
 		}
-		u.RawQuery = q.Encode()
+		payload = fmt.Sprintf("%s&signature=%s", payload, hex.EncodeToString(mac.Sum(nil)))
 	}
-	req, err := http.NewRequest(method, u.String(), bytes.NewReader(body))
+	var req *http.Request
+	if method == http.MethodGet {
+		req, err = http.NewRequest(method, fmt.Sprintf("%s/%s?%s", ENDPOINT, path, payload), nil)
+	} else {
+		req, err = http.NewRequest(method, fmt.Sprintf("%s/%s", ENDPOINT, path), strings.NewReader(payload))
+		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if sign || stream {
+		req.Header.Add("X-MBX-APIKEY", c.key)
+	}
+	req.Header.Add("Accept", "application/json")
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	p.Headers(req)
-
-	return req, nil
+	defer resp.Body.Close()
+	response, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %d: %v", resp.StatusCode, string(response))
+	}
+	return response, err
 }
 
-func (c *Client) sendRequest(method, spath string, body []byte, params *map[string]string) (*http.Response, error) {
-	req, err := c.newRequest(method, spath, body, params)
-	if err != nil {
-		return nil, err
-	}
-	res, err := c.HTTPC.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if res.StatusCode != 200 {
-		buf := new(bytes.Buffer)
-		buf.ReadFrom(res.Body)
-		return nil, fmt.Errorf("faild to get data. status: %s", res.Status)
-	}
-	return res, nil
-}
-
-func decode(res *http.Response, out interface{}) error {
-	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-	err := json.Unmarshal([]byte(body), &out)
-	if err == nil {
-		return nil
-	}
+func (b *Client) Ping() error {
+	path := "fapi/v1/ping"
+	_, err := b.do(http.MethodGet, path, nil, false, false)
 	return err
 }
 
-func responseLog(res *http.Response) string {
-	b, _ := httputil.DumpResponse(res, true)
-	return string(b)
-}
-func requestLog(req *http.Request) string {
-	b, _ := httputil.DumpRequest(req, true)
-	return string(b)
+type ServerTime struct {
+	ServerTime int64 `json:"serverTime"`
 }
 
-func (p *Client) Headers(request *http.Request) {
-	request.Header.Add("Accept", "application/json")
-	request.Header.Add("Content-Type", "application/json; charset=UTF-8")
+func (b *Client) Time() (time.Time, error) {
+	res, err := b.do(http.MethodGet, "fapi/v1/time", nil, false, false)
+	if err != nil {
+		return time.Time{}, err
+	}
+	serverTime := &ServerTime{}
+	err = json.Unmarshal(res, serverTime)
+	if err != nil {
+		return time.Time{}, err
+	}
+	timestamp, err := TimeFromUnixTimestampInt(serverTime.ServerTime)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return timestamp, nil
 }
 
-func (p *Client) Sign(data string) (signature string) {
-	apiSecret := p.apiSecret
-	h := hmac.New(sha256.New, []byte(apiSecret))
-	h.Write([]byte(data))
-	signature = hex.EncodeToString(h.Sum(nil))
-	return
+func TimeFromUnixTimestampInt(raw interface{}) (time.Time, error) {
+	ts, ok := raw.(int64)
+	if !ok {
+		return time.Time{}, errors.New(fmt.Sprintf("unable to parse, value not int64: %T", raw))
+	}
+	return time.Unix(0, ts*int64(time.Millisecond)), nil
+}
+
+func Bytes2String(b []byte) string {
+	return *(*string)(unsafe.Pointer(&b))
 }

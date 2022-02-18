@@ -1,44 +1,8 @@
-package apxapi
+package appolloxapi
 
 import (
-	"fmt"
-	"io/ioutil"
-	"log"
 	"net/http"
 )
-
-func (p *Client) Ping() {
-	res, err := p.sendRequest(http.MethodGet, "/fapi/v1/ping", nil, nil)
-	if err != nil {
-		log.Println("func1 Ping:", err)
-	}
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		log.Println("func2 Ping:", err)
-	}
-	fmt.Println(string(b))
-}
-
-type CheckServerTimeResponse struct {
-	ServerTime int64 `json:"serverTime"`
-}
-
-func (p *Client) CheckServerTime() (result CheckServerTimeResponse, err error) {
-	res, err := p.sendRequest(http.MethodGet, "/fapi/v1/time", nil, nil)
-	if err != nil {
-		log.Println("func1 CheckServerTime:", err)
-		return
-	}
-
-	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-	err = json.Unmarshal([]byte(body), &result)
-	if err != nil {
-		log.Println("func2 CheckServerTime:", err)
-		return
-	}
-	return result, nil
-}
 
 type GetExchangeInfoResponse struct {
 	Timezone    string `json:"timezone"`
@@ -97,20 +61,15 @@ type GetExchangeInfoResponse struct {
 	} `json:"symbols"`
 }
 
-func (p *Client) GetExchangeInfo() (result GetExchangeInfoResponse, err error) {
-	res, err := p.sendRequest(http.MethodGet, "/fapi/v1/exchangeInfo", nil, nil)
+func (b *Client) GetExchangeInfo() (*GetExchangeInfoResponse, error) {
+	res, err := b.do(http.MethodGet, "fapi/v1/exchangeInfo", nil, false, false)
 	if err != nil {
-		log.Println("func1 GetExchangeInfo:", err)
-		return
+		return nil, err
 	}
-
-	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-
-	err = json.Unmarshal([]byte(body), &result)
+	exchange := &GetExchangeInfoResponse{}
+	err = json.Unmarshal(res, &exchange)
 	if err != nil {
-		log.Println("func2 GetExchangeInfo:", err)
-		return
+		return nil, err
 	}
-	return result, nil
+	return exchange, nil
 }
