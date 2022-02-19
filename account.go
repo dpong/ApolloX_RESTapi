@@ -175,7 +175,7 @@ type PositionResponse struct {
 	PositionSide     string `json:"positionSide"`
 }
 
-func (b *Client) SwapPositions() ([]*PositionResponse, error) {
+func (b *Client) Positions() ([]*PositionResponse, error) {
 	res, err := b.do(http.MethodGet, "fapi/v2/positionRisk", nil, true, false)
 	if err != nil {
 		return nil, err
