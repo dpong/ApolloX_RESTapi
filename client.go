@@ -46,6 +46,11 @@ func New(key, secret, subaccount string) *Client {
 	}
 }
 
+// in milliseconds, default is 5000
+func (c *Client) SetRecvWindow(recvWindow int) {
+	c.window = recvWindow
+}
+
 func (c *Client) do(method, path string, data interface{}, sign bool, stream bool) (response []byte, err error) {
 	values, err := query.Values(data)
 	if err != nil {
