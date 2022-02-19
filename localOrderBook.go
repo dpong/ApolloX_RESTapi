@@ -844,7 +844,7 @@ func apxSocket(ctx context.Context, symbol, channel string, logger *log.Logger, 
 				logger.Infoln(message)
 				return errors.New(message)
 			}
-			_, buf, err := conn.ReadMessage()
+			_, buf, err := w.Conn.ReadMessage()
 			if err != nil {
 				d := w.OutApxErr()
 				*mainCh <- d
