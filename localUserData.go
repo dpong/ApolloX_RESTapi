@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -147,7 +146,6 @@ func (u *UserDataBranch) maintainUserData(
 			}
 		}
 	}()
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -229,8 +227,6 @@ func (u *UserDataBranch) handleTrade(res *map[string]interface{}) {
 }
 
 func (u *UserDataBranch) handleAccountUpdate(res *map[string]interface{}) {
-	// test
-	fmt.Println(*res)
 	if balances, ok := (*res)["B"].([]interface{}); ok {
 		for _, item := range balances {
 			data := item.(map[string]interface{})
