@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -125,12 +126,10 @@ func (u *UserDataBranch) maintainUserData(
 	client *Client,
 	userData *chan map[string]interface{},
 ) error {
-	innerErr := make(chan error, 1)
 	// get the first snapshot to initial data struct
 	if err := u.getAccountSnapShot(client); err != nil {
 		return err
 	}
-
 	// update snapshot with steady interval
 	go func() {
 		snap := time.NewTicker(time.Second * time.Duration(u.httpUpdateInterval))
@@ -138,8 +137,6 @@ func (u *UserDataBranch) maintainUserData(
 		for {
 			select {
 			case <-ctx.Done():
-				return
-			case <-innerErr:
 				return
 			case <-snap.C:
 				if err := u.getAccountSnapShot(client); err != nil {
@@ -232,6 +229,8 @@ func (u *UserDataBranch) handleTrade(res *map[string]interface{}) {
 }
 
 func (u *UserDataBranch) handleAccountUpdate(res *map[string]interface{}) {
+	// test
+	fmt.Println(*res)
 	if balances, ok := (*res)["B"].([]interface{}); ok {
 		for _, item := range balances {
 			data := item.(map[string]interface{})
@@ -327,7 +326,7 @@ func (c *Client) userData(ctx context.Context, listenKey string, logger *log.Log
 	}
 	log.Println("Connected:", url)
 	w.Conn = conn
-	defer conn.Close()
+	defer w.Conn.Close()
 	if err := w.Conn.SetReadDeadline(time.Now().Add(time.Second * duration)); err != nil {
 		return err
 	}
@@ -352,6 +351,8 @@ func (c *Client) userData(ctx context.Context, listenKey string, logger *log.Log
 			}
 		}
 	}()
+	read := time.NewTicker(time.Millisecond * 100)
+	defer read.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -359,7 +360,7 @@ func (c *Client) userData(ctx context.Context, listenKey string, logger *log.Log
 			message := "Apx User Data closed..."
 			log.Println(message)
 			return errors.New(message)
-		default:
+		case <-read.C:
 			if w.Conn == nil {
 				w.OutApxErr()
 				message := "Apx User Data reconnect..."
@@ -389,6 +390,8 @@ func (c *Client) userData(ctx context.Context, listenKey string, logger *log.Log
 				innerErr <- errors.New("restart")
 				return err
 			}
+		default:
+			time.Sleep(time.Millisecond * 50)
 		}
 	}
 }
