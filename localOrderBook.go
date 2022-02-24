@@ -310,6 +310,60 @@ func (o *OrderBookBranch) Close() {
 	o.asks.mux.Unlock()
 }
 
+func (o *OrderBookBranch) GetImbalance(inlevel int) (decimal.Decimal, error) {
+	var bids, asks [][]string
+	errs := make(chan error, 5)
+	defer close(errs)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		o.bids.mux.RLock()
+		defer o.bids.mux.RUnlock()
+		if !o.snapShoted {
+			errs <- errors.New("not snapshoted")
+			return
+		}
+		if len(o.bids.Book) < inlevel {
+			errs <- errors.New("bid len is less then request")
+			return
+		}
+		bids = o.bids.Book[:inlevel]
+	}()
+	go func() {
+		defer wg.Done()
+		o.asks.mux.RLock()
+		defer o.asks.mux.RUnlock()
+		if !o.snapShoted {
+			errs <- errors.New("not snapshoted")
+			return
+		}
+		if len(o.asks.Book) < inlevel {
+			errs <- errors.New("ask len is less then request")
+			return
+		}
+		asks = o.asks.Book[:inlevel]
+	}()
+	wg.Wait()
+	if len(errs) != 0 {
+		err := <-errs
+		return decimal.Zero, err
+	}
+	var total, bqty, aqty decimal.Decimal
+	for i := 0; i < inlevel; i++ {
+		if len(bids[i]) < 2 || len(asks[i]) < 2 {
+			return decimal.Zero, errors.New("missing data for calculate imbalance")
+		}
+		bQ, _ := decimal.NewFromString(bids[i][1])
+		aQ, _ := decimal.NewFromString(asks[i][1])
+		bqty = bqty.Add(bQ)
+		aqty = aqty.Add(aQ)
+		total = total.Add(bQ.Add(aQ))
+	}
+	result := bqty.Sub(aqty).Div(total)
+	return result, nil
+}
+
 // return bids, ready or not
 func (o *OrderBookBranch) GetBids() ([][]string, bool) {
 	o.bids.mux.RLock()
@@ -526,7 +580,7 @@ func (o *OrderBookBranch) SetImpactCumRange(toLevel int) {
 	o.toLevel = toLevel - 1
 }
 
-func ReStartMainSeesionErrHub(err string) bool {
+func reStartMainSeesionErrHub(err string) bool {
 	switch {
 	case strings.Contains(err, "reconnect because of time out"):
 		return false
@@ -541,7 +595,7 @@ func ReStartMainSeesionErrHub(err string) bool {
 func LocalOrderBook(symbol string, logger *log.Logger, streamTrade bool) *OrderBookBranch {
 	var o OrderBookBranch
 	o.SetLookBackSec(5)
-	o.SetImpactCumRange(20)
+	o.SetImpactCumRange(5)
 	ctx, cancel := context.WithCancel(context.Background())
 	o.cancel = &cancel
 	bookticker := make(chan map[string]interface{}, 50)
@@ -559,7 +613,7 @@ func LocalOrderBook(symbol string, logger *log.Logger, streamTrade bool) *OrderB
 				if err := apxSocket(ctx, symbol, "@depth@100ms", logger, &bookticker, &orderBookErr); err == nil {
 					return
 				} else {
-					if ReStartMainSeesionErrHub(err.Error()) {
+					if reStartMainSeesionErrHub(err.Error()) {
 						errCh <- errors.New("Reconnect websocket")
 					}
 					logger.Warningf("Reconnect %s orderbook stream.\n", symbol)
@@ -581,7 +635,7 @@ func LocalOrderBook(symbol string, logger *log.Logger, streamTrade bool) *OrderB
 					if err := apxSocket(ctx, symbol, tradeChannel, logger, &bookticker, &tradeErr); err == nil {
 						return
 					} else {
-						if ReStartMainSeesionErrHub(err.Error()) {
+						if reStartMainSeesionErrHub(err.Error()) {
 							errCh <- errors.New("Reconnect websocket")
 						}
 						logger.Warningf("Reconnect %s trade stream.\n", symbol)
@@ -664,7 +718,7 @@ func (o *OrderBookBranch) maintainOrderBook(
 				}
 				if len(storage) != 0 {
 					for _, data := range storage {
-						if err := o.SwapUpdateJudge(&data, &linked); err != nil {
+						if err := o.swapUpdateJudge(&data, &linked); err != nil {
 							return err
 						}
 					}
@@ -672,13 +726,13 @@ func (o *OrderBookBranch) maintainOrderBook(
 					storage = make([]map[string]interface{}, 0)
 				}
 				// handle incoming data
-				if err := o.SwapUpdateJudge(&message, &linked); err != nil {
+				if err := o.swapUpdateJudge(&message, &linked); err != nil {
 					return err
 				}
 				// update last update
 				lastUpdate = time.Now()
 			default:
-				st := FormatingTimeStamp(message["T"].(float64))
+				st := formatingTimeStamp(message["T"].(float64))
 				price, _ := decimal.NewFromString(message["p"].(string))
 				size, _ := decimal.NewFromString(message["q"].(string))
 				// is the buyer the mm
@@ -689,8 +743,8 @@ func (o *OrderBookBranch) maintainOrderBook(
 				} else {
 					side = "buy"
 				}
-				o.LocateTradeImpact(side, price, size, st)
-				o.RenewTradeImpact()
+				o.locateTradeImpact(side, price, size, st)
+				o.renewTradeImpact()
 			}
 		default:
 			if time.Now().After(lastUpdate.Add(time.Second * 10)) {
@@ -707,7 +761,7 @@ func (o *OrderBookBranch) maintainOrderBook(
 	}
 }
 
-func (o *OrderBookBranch) LocateTradeImpact(side string, price, size decimal.Decimal, st time.Time) {
+func (o *OrderBookBranch) locateTradeImpact(side string, price, size decimal.Decimal, st time.Time) {
 	switch side {
 	case "buy":
 		o.buyTrade.mux.Lock()
@@ -724,7 +778,7 @@ func (o *OrderBookBranch) LocateTradeImpact(side string, price, size decimal.Dec
 	}
 }
 
-func (o *OrderBookBranch) RenewTradeImpact() {
+func (o *OrderBookBranch) renewTradeImpact() {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	now := time.Now()
@@ -768,7 +822,7 @@ func (o *OrderBookBranch) RenewTradeImpact() {
 	wg.Wait()
 }
 
-func (o *OrderBookBranch) SwapUpdateJudge(message *map[string]interface{}, linked *bool) error {
+func (o *OrderBookBranch) swapUpdateJudge(message *map[string]interface{}, linked *bool) error {
 	headID := decimal.NewFromFloat((*message)["U"].(float64))
 	tailID := decimal.NewFromFloat((*message)["u"].(float64))
 	puID := decimal.NewFromFloat((*message)["pu"].(float64))
@@ -796,7 +850,7 @@ func (o *OrderBookBranch) SwapUpdateJudge(message *map[string]interface{}, linke
 	return nil
 }
 
-func DecodingMap(message []byte, logger *log.Logger) (res map[string]interface{}, err error) {
+func decodingMap(message []byte, logger *log.Logger) (res map[string]interface{}, err error) {
 	if message == nil {
 		err = errors.New("the incoming message is nil")
 		return nil, err
@@ -838,7 +892,7 @@ func apxSocket(ctx context.Context, symbol, channel string, logger *log.Logger, 
 			return err
 		default:
 			if w.Conn == nil {
-				d := w.OutApxErr()
+				d := w.outApxErr()
 				*mainCh <- d
 				message := "Apx reconnect..."
 				logger.Infoln(message)
@@ -846,23 +900,23 @@ func apxSocket(ctx context.Context, symbol, channel string, logger *log.Logger, 
 			}
 			_, buf, err := w.Conn.ReadMessage()
 			if err != nil {
-				d := w.OutApxErr()
+				d := w.outApxErr()
 				*mainCh <- d
 				message := "Apx reconnect..."
 				logger.Infoln(message)
 				return errors.New(message)
 			}
-			res, err1 := DecodingMap(buf, logger)
+			res, err1 := decodingMap(buf, logger)
 			if err1 != nil {
-				d := w.OutApxErr()
+				d := w.outApxErr()
 				*mainCh <- d
 				message := "Apx reconnect..."
 				logger.Infoln(message)
 				return errors.New(message)
 			}
-			err2 := w.HandleapxSocketData(res, mainCh)
+			err2 := w.handleapxSocketData(res, mainCh)
 			if err2 != nil {
-				d := w.OutApxErr()
+				d := w.outApxErr()
 				*mainCh <- d
 				message := "Apx reconnect..."
 				logger.Infoln(message)
@@ -875,7 +929,7 @@ func apxSocket(ctx context.Context, symbol, channel string, logger *log.Logger, 
 	}
 }
 
-func (w *wS) HandleapxSocketData(res map[string]interface{}, mainCh *chan map[string]interface{}) error {
+func (w *wS) handleapxSocketData(res map[string]interface{}, mainCh *chan map[string]interface{}) error {
 	data, ok := res["data"].(map[string]interface{})
 	if !ok {
 		return nil
@@ -887,13 +941,13 @@ func (w *wS) HandleapxSocketData(res map[string]interface{}, mainCh *chan map[st
 	switch event {
 	case "depthUpdate":
 		if st, ok := data["E"].(float64); !ok {
-			m := w.OutApxErr()
+			m := w.outApxErr()
 			*mainCh <- m
 			return errors.New("got nil when updating event time")
 		} else {
-			stamp := FormatingTimeStamp(st)
+			stamp := formatingTimeStamp(st)
 			if time.Now().After(stamp.Add(time.Second * 5)) {
-				m := w.OutApxErr()
+				m := w.outApxErr()
 				*mainCh <- m
 				return errors.New("websocket data delay more than 5 sec")
 			}
@@ -903,7 +957,7 @@ func (w *wS) HandleapxSocketData(res map[string]interface{}, mainCh *chan map[st
 		headID := decimal.NewFromFloat(firstId)
 		tailID := decimal.NewFromFloat(lastId)
 		if headID.LessThan(w.LastUpdatedId) {
-			m := w.OutApxErr()
+			m := w.outApxErr()
 			*mainCh <- m
 			return errors.New("got error when updating lastUpdateId")
 		}
@@ -917,13 +971,13 @@ func (w *wS) HandleapxSocketData(res map[string]interface{}, mainCh *chan map[st
 	return nil
 }
 
-func (w *wS) OutApxErr() map[string]interface{} {
+func (w *wS) outApxErr() map[string]interface{} {
 	w.OnErr = true
 	m := make(map[string]interface{})
 	return m
 }
 
-func FormatingTimeStamp(timeFloat float64) time.Time {
+func formatingTimeStamp(timeFloat float64) time.Time {
 	t := time.Unix(int64(timeFloat/1000), 0)
 	return t
 }

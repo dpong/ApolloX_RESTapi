@@ -220,7 +220,7 @@ func (u *UserDataBranch) handleTrade(res *map[string]interface{}) {
 		data.Fee, _ = decimal.NewFromString(fee)
 	}
 	if st, ok := (*res)["T"].(float64); ok {
-		stamp := FormatingTimeStamp(st)
+		stamp := formatingTimeStamp(st)
 		data.TimeStamp = stamp
 	}
 	u.insertTrade(&data)
@@ -352,13 +352,13 @@ func (c *Client) userData(ctx context.Context, listenKey string, logger *log.Log
 	for {
 		select {
 		case <-ctx.Done():
-			w.OutApxErr()
+			w.outApxErr()
 			message := "Apx User Data closed..."
 			log.Println(message)
 			return errors.New(message)
 		case <-read.C:
 			if w.Conn == nil {
-				w.OutApxErr()
+				w.outApxErr()
 				message := "Apx User Data reconnect..."
 				log.Println(message)
 				innerErr <- errors.New("restart")
@@ -366,15 +366,15 @@ func (c *Client) userData(ctx context.Context, listenKey string, logger *log.Log
 			}
 			_, buf, err := w.Conn.ReadMessage()
 			if err != nil {
-				w.OutApxErr()
+				w.outApxErr()
 				message := "Apx User Data reconnect..."
 				log.Println(message)
 				innerErr <- errors.New("restart")
 				return errors.New(message)
 			}
-			res, err1 := DecodingMap(buf, logger)
+			res, err1 := decodingMap(buf, logger)
 			if err1 != nil {
-				w.OutApxErr()
+				w.outApxErr()
 				message := "Apx User Data reconnect..."
 				log.Println(message, err1)
 				innerErr <- errors.New("restart")
@@ -394,7 +394,7 @@ func (c *Client) userData(ctx context.Context, listenKey string, logger *log.Log
 
 func handleUserData(res *map[string]interface{}, mainCh *chan map[string]interface{}) {
 	if eventTimeUnix, ok := (*res)["E"].(float64); ok {
-		eventTime := FormatingTimeStamp(eventTimeUnix)
+		eventTime := formatingTimeStamp(eventTimeUnix)
 		if time.Now().After(eventTime.Add(time.Minute * 60)) {
 			return
 		}
