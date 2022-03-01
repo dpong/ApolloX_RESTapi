@@ -7,9 +7,9 @@ import (
 
 type PlaceOrderOpts struct {
 	Symbol      string `url:"symbol"`
-	Price       string `url:"price"`
+	Price       string `url:"price,omitempty"`
 	Qty         string `url:"quantity"`
-	TimeInForce string `url:"timeInForce"`
+	TimeInForce string `url:"timeInForce,omitempty"`
 	Type        string `url:"type"`
 	Side        string `url:"side"`
 	ReduceOnly  string `url:"reduceOnly"`
@@ -92,8 +92,10 @@ func (b *Client) PlaceBatchOrders(orders []PlaceOrderOpts) (*BatchOrdersResponse
 		m["symbol"] = strings.ToUpper(order.Symbol)
 		m["side"] = strings.ToUpper(order.Side)
 		m["type"] = strings.ToUpper(order.Type)
-		m["timeInForce"] = strings.ToUpper(order.TimeInForce)
-		m["price"] = order.Price
+		if m["type"] == "LIMIT" {
+			m["timeInForce"] = strings.ToUpper(order.TimeInForce)
+			m["price"] = order.Price
+		}
 		m["quantity"] = order.Qty
 		m["reduceOnly"] = strings.ToLower(order.ReduceOnly)
 		opts = append(opts, m)
